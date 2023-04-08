@@ -2,7 +2,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -13,7 +12,6 @@ import (
 	"github.com/barasher/go-exiftool"
 	"github.com/charmbracelet/log"
 	"github.com/pkg/errors"
-	"github.com/rwcarlsen/goexif/exif"
 )
 
 func main() {
@@ -100,40 +98,55 @@ func ensureDir(path string) error {
 
 func extractDate(path string, dateRegex *regexp.Regexp) (time.Time, bool, error) {
 	// Extract date from EXIF data
-	f, err := os.Open(path)
+	et, err := exiftool.NewExiftool()
+	if err != nil {
+		return time.Time{}, false, errors.Errorf("Error when intializing: %v\n", err)
+	}
+	defer et.Close()
+
+	fileInfos := et.ExtractMetadata(path)
+
+	for _, fileInfo := range fileInfos {
+		if fileInfo.Err != nil {
+			log.Errorf("Error concerning %v: %v\n", fileInfo.File, fileInfo.Err)
+			continue
+		}
+
+		for k, v := range fileInfo.Fields {
+			log.Debugf("[%v] %v\n", k, v)
+		}
+	}
+
+	dateStr := ""
+	if filepath.Ext(path) == ".mp4" {
+		dateStr, _ = fileInfos[0].GetString("MediaCreateDate")
+	} else if filepath.Ext(path) == ".jpg" || filepath.Ext(path) == ".jepg" {
+		dateStr, _ = fileInfos[0].GetString("DateTaken")
+	}
+	date, _ := time.Parse("20060102-150405", dateStr)
+	if !date.IsZero() {
+		return date, true, nil
+	}
+
+	// Extract date from filename
+	matches := dateRegex.FindStringSubmatch(path)
+	if len(matches) != 4 {
+		return time.Time{}, false, errors.Errorf("unable to extract date from filename")
+	}
+	dateStr = matches[0]
+
+	// Parse date string and return as time.Time
+	if strings.Contains(dateStr, "-") {
+		date, err = time.Parse("20060102-150405", dateStr)
+	} else if strings.Contains(dateStr, "_") {
+		date, err = time.Parse("20060102_150405", dateStr)
+	} else {
+		date, err = time.Parse("20060102", dateStr)
+	}
 	if err != nil {
 		return time.Time{}, false, errors.WithStack(err)
 	}
-	defer f.Close()
-
-	x, err := exif.Decode(f)
-	if err == nil {
-		date, _ := x.DateTime()
-		if !date.IsZero() {
-			return date, true, nil
-		}
-		f.Seek(0, 0)
-
-		// Extract date from filename
-		matches := dateRegex.FindStringSubmatch(path)
-		if len(matches) != 2 {
-			return time.Time{}, false, errors.Errorf("unable to extract date from filename")
-		}
-		dateStr := matches[1]
-
-		// Parse date string and return as time.Time
-		if strings.Contains(dateStr, "-") {
-			date, err = time.Parse("20060102-150405", dateStr)
-		} else {
-			date, err = time.Parse("20060102_150405", dateStr)
-		}
-		if err != nil {
-			return time.Time{}, false, errors.WithStack(err)
-		}
-		return date, false, nil
-	}
-
-	return time.Time{}, false, errors.WithStack(err)
+	return date, false, nil
 }
 
 func copyFile(src, dest string) error {
@@ -171,19 +184,21 @@ func updateExif(path string, date time.Time) error {
 
 	fileInfos := e.ExtractMetadata(path)
 
-	for _, fileInfo := range fileInfos {
-		if fileInfo.Err != nil {
-			fmt.Printf("Error concerning %v: %v\n", fileInfo.File, fileInfo.Err)
-			continue
-		}
+	dateStr := ""
+	if filepath.Ext(path) == ".mp4" {
+		dateStr, _ = fileInfos[0].GetString("MediaCreateDate")
+		log.Infof("Date Original %v changed to %v", dateStr, date.Format("2006-01-02 15:04:05"))
+		fileInfos[0].SetString("MediaCreateDate", date.Format("2006-01-02 15:04:05"))
+		fileInfos[0].SetString("CreateDate", date.Format("2006-01-02 15:04:05"))
 
-		for k, v := range fileInfo.Fields {
-			log.Infof("[%v] %v\n", k, v)
-		}
+	} else if filepath.Ext(path) == ".jpg" || filepath.Ext(path) == ".jepg" {
+		dateStr, _ = fileInfos[0].GetString("DateTaken")
+		log.Infof("Date Original %v changed to %v", dateStr, date.Format("2006-01-02 15:04:05"))
+
+		fileInfos[0].SetString("DateTaken", date.Format("2006:01:22 00:00:00"))
 	}
 
-	//fileInfos[0].SetString("Date Taken", "newTitle")
-	//e.WriteMetadata(fileInfos)
+	e.WriteMetadata(fileInfos)
 
 	return nil
 }
