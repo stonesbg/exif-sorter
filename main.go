@@ -31,14 +31,14 @@ func main() {
 	}
 
 	// Compile regex to extract date from filename
-	dateRegex := regexp.MustCompile(`(\d{4})[\-_]?(\d{2})[\-_]?(\d{2})`)
+	dateRegex := regexp.MustCompile(`(\d{8}(?:-\d{6})?)`)
 
 	log.Infof("Carrying out the copy: %v", *copyFlag)
 
 	// Traverse source directory and process each file
 	filepath.Walk(*srcDirPtr, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			log.Errorf("Error while accessing %q: %v\n", path, err)
+			log.Errorf("Error while accessing %q: %v", path, err)
 			return nil
 		}
 
@@ -50,7 +50,7 @@ func main() {
 		// Extract date from EXIF data or filename
 		date, ifExif, err := extractDate(path, dateRegex)
 		if err != nil {
-			log.Errorf("Error while extracting date from %q: %+v\n", path, err)
+			log.Errorf("Error while extracting date from %q: %+v", path, err)
 			return nil
 		}
 
@@ -61,26 +61,26 @@ func main() {
 		if *copyFlag {
 			err = copyFile(path, newName)
 		} else {
-			err = os.Rename(path, newName)
+			err = renameFile(path, newName)
 		}
 		if err != nil {
-			log.Errorf("Error while processing %q: %+v\n", path, err)
+			log.Errorf("Error while processing %q: %+v", path, err)
 			return nil
 		}
 
 		// Update EXIF data if requested
 		if *updateExifFlag && !ifExif {
-			log.Warnf("Need to update EXIF data of %q\n", newName)
+			log.Warnf("Need to update EXIF data of %q", newName)
 			err = updateExif(newName, date)
 			if err != nil {
-				log.Errorf("Error while updating EXIF data of %q: %v\n", newName, err)
+				log.Errorf("Error while updating EXIF data of %q: %v", newName, err)
 				return nil
 			}
 		}
 
 		// Log file move or copy
 		if *logFlag {
-			log.Infof("%s %q -> %q\n", getActionString(*copyFlag), path, newName)
+			log.Infof("%s %q -> %q", getActionString(*copyFlag), path, newName)
 		}
 
 		return nil
@@ -100,7 +100,7 @@ func extractDate(path string, dateRegex *regexp.Regexp) (time.Time, bool, error)
 	// Extract date from EXIF data
 	et, err := exiftool.NewExiftool()
 	if err != nil {
-		return time.Time{}, false, errors.Errorf("Error when intializing: %v\n", err)
+		return time.Time{}, false, errors.Errorf("Error when intializing: %v", err)
 	}
 	defer et.Close()
 
@@ -108,29 +108,29 @@ func extractDate(path string, dateRegex *regexp.Regexp) (time.Time, bool, error)
 
 	for _, fileInfo := range fileInfos {
 		if fileInfo.Err != nil {
-			log.Errorf("Error concerning %v: %v\n", fileInfo.File, fileInfo.Err)
+			log.Errorf("Error concerning %v: %v", fileInfo.File, fileInfo.Err)
 			continue
 		}
 
 		for k, v := range fileInfo.Fields {
-			log.Debugf("[%v] %v\n", k, v)
+			log.Debugf("[%v] %v", k, v)
 		}
 	}
 
 	dateStr := ""
-	if filepath.Ext(path) == ".mp4" {
+	if strings.ToLower(filepath.Ext(path)) == ".mp4" {
 		dateStr, _ = fileInfos[0].GetString("MediaCreateDate")
-	} else if filepath.Ext(path) == ".jpg" || filepath.Ext(path) == ".jepg" {
-		dateStr, _ = fileInfos[0].GetString("DateTaken")
+	} else if strings.ToLower(filepath.Ext(path)) == ".jpg" || strings.ToLower(filepath.Ext(path)) == ".jpeg" {
+		dateStr, _ = fileInfos[0].GetString("DateTimeOriginal")
 	}
-	date, _ := time.Parse("20060102-150405", dateStr)
+	date, _ := time.Parse("2006:01:02 15:04:05", dateStr)
 	if !date.IsZero() {
 		return date, true, nil
 	}
 
 	// Extract date from filename
 	matches := dateRegex.FindStringSubmatch(path)
-	if len(matches) != 4 {
+	if len(matches) == 0 {
 		return time.Time{}, false, errors.Errorf("unable to extract date from filename")
 	}
 	dateStr = matches[0]
@@ -174,10 +174,25 @@ func copyFile(src, dest string) error {
 	return err
 }
 
+func renameFile(src, dest string) error {
+	err := ensureDir(dest)
+	if err != nil {
+		return err
+	}
+
+	// Create destination file for writing
+	err = os.Rename(src, dest)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func updateExif(path string, date time.Time) error {
 	e, err := exiftool.NewExiftool()
 	if err != nil {
-		log.Errorf("Error when intializing: %v\n", err)
+		log.Errorf("Error when intializing: %v", err)
 		return err
 	}
 	defer e.Close()
@@ -185,17 +200,18 @@ func updateExif(path string, date time.Time) error {
 	fileInfos := e.ExtractMetadata(path)
 
 	dateStr := ""
-	if filepath.Ext(path) == ".mp4" {
+	if strings.ToLower(filepath.Ext(path)) == ".mp4" {
 		dateStr, _ = fileInfos[0].GetString("MediaCreateDate")
 		log.Infof("Date Original %v changed to %v", dateStr, date.Format("2006-01-02 15:04:05"))
 		fileInfos[0].SetString("MediaCreateDate", date.Format("2006-01-02 15:04:05"))
 		fileInfos[0].SetString("CreateDate", date.Format("2006-01-02 15:04:05"))
 
-	} else if filepath.Ext(path) == ".jpg" || filepath.Ext(path) == ".jepg" {
+	} else if strings.ToLower(filepath.Ext(path)) == ".jpg" || strings.ToLower(filepath.Ext(path)) == ".jepg" {
 		dateStr, _ = fileInfos[0].GetString("DateTaken")
 		log.Infof("Date Original %v changed to %v", dateStr, date.Format("2006-01-02 15:04:05"))
 
-		fileInfos[0].SetString("DateTaken", date.Format("2006:01:22 00:00:00"))
+		fileInfos[0].SetString("DateTimeOriginal", date.Format("2006-01-02 15:04:05"))
+		fileInfos[0].SetString("CreateDate", date.Format("2006-01-02 15:04:05"))
 	}
 
 	e.WriteMetadata(fileInfos)
